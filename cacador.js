@@ -8,12 +8,11 @@ const CONFIG = {
   tagAlvo: 'Novo cliente',
 }
 
+import { exec } from 'child_process'
+
 function notificar(nomeCliente) {
-  notifier.notify({
-    title: '🎯 Caçador — Novo Cliente!',
-    message: `Cliente capturado: ${nomeCliente}`,
-    sound: false,
-  })
+  const msg = `Cliente capturado: ${nomeCliente}`
+  exec(`powershell -Command "Add-Type -AssemblyName PresentationFramework; [System.Windows.MessageBox]::Show('${msg}', 'Caçador OPA', 'OK', 'Information')"`)
 }
 
 async function getOpaTab() {
