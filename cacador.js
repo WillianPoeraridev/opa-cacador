@@ -8,11 +8,12 @@ const CONFIG = {
   tagAlvo: 'Novo cliente',
 }
 
-import { exec } from 'child_process'
-
 function notificar(nomeCliente) {
-  const msg = `Cliente capturado: ${nomeCliente}`
-  exec(`powershell -Command "Add-Type -AssemblyName PresentationFramework; [System.Windows.MessageBox]::Show('${msg}', 'Caçador OPA', 'OK', 'Information')"`)
+  notifier.notify({
+    title: '🎯 Caçador — Novo Cliente!',
+    message: `Cliente capturado: ${nomeCliente}`,
+    sound: false,
+  })
 }
 
 async function getOpaTab() {
@@ -32,36 +33,50 @@ async function capturarCliente(clienteNome) {
 
     // Abre a fila
     await exec(`document.querySelector('div[data-id="atend_aguard"]').click()`)
-    await new Promise(r => setTimeout(r, 1000))
 
-    // Clica no card do cliente pelo nome
+    // Loop: tenta clicar no card assim que aparecer (max 5s)
     const primeiroNome = clienteNome.split(' ')[0]
-    const result = await exec(`
-      (function() {
-        const itens = document.querySelectorAll('div.list_dados div.atend_aguard')
-        for (const item of itens) {
-          const titulo = item.querySelector('div.title')
-          if (titulo && titulo.innerText.includes('${primeiroNome}')) {
-            titulo.click()
-            return 'clicado: ' + titulo.innerText
+    let cardClicado = false
+    const inicioCard = Date.now()
+    while (!cardClicado && Date.now() - inicioCard < 5000) {
+      const result = await exec(`
+        (function() {
+          const itens = document.querySelectorAll('div.list_dados div.atend_aguard')
+          for (const item of itens) {
+            const titulo = item.querySelector('div.title')
+            if (titulo && titulo.innerText.includes('${primeiroNome}')) {
+              titulo.click()
+              return 'ok'
+            }
           }
-        }
-        return 'nao encontrado'
-      })()
-    `)
-    console.log('Card:', result.result?.value)
-    await new Promise(r => setTimeout(r, 1500))
-
-    // Clica em Atender (button.orange)
-    const btnResult = await exec(`
-      (function() {
-        const btn = document.querySelector('button.orange')
-        if (btn) { btn.click(); return 'ok: ' + btn.innerText }
-        return 'botao nao encontrado'
-      })()
-    `)
-    console.log('Botão:', btnResult.result?.value)
-    await new Promise(r => setTimeout(r, 500))
+          return 'aguardando'
+        })()
+      `)
+      if (result.result?.value === 'ok') {
+        cardClicado = true
+      } else {
+        await new Promise(r => setTimeout(r, 50))
+      }
+    }
+    if (!cardClicado) console.warn('⚠️ Card não encontrado em 5s')
+    // Fica tentando clicar em Atender até conseguir (max 5s)
+    let clicou = false
+    const inicio = Date.now()
+    while (!clicou && Date.now() - inicio < 5000) {
+      const btnResult = await exec(`
+        (function() {
+          const btn = document.querySelector('button.orange')
+          if (btn) { btn.click(); return 'ok' }
+          return 'aguardando'
+        })()
+      `)
+      if (btnResult.result?.value === 'ok') {
+        clicou = true
+      } else {
+        await new Promise(r => setTimeout(r, 100))
+      }
+    }
+    if (!clicou) console.warn('⚠️ Botão Atender não apareceu em 5s')
 
     // Volta pro chat
     await exec(`document.querySelector('div[data-id="chat"]').click()`)
@@ -90,6 +105,21 @@ async function main() {
   const { Network } = client
 
   await Network.enable()
+
+  // Previne throttling do Chrome em abas em background
+  try {
+    const { Page } = client
+    await Page.enable()
+    await client.send('Emulation.setFocusEmulationEnabled', { enabled: true })
+  } catch(_) {}
+
+  // Mantém a aba "viva" com um ping a cada 10s
+  setInterval(async () => {
+    try {
+      await client.send('Runtime.evaluate', { expression: '1' })
+    } catch(_) {}
+  }, 10000)
+
   console.log('👀 Escutando fila em tempo real...\n')
 
   let ultimoCapturado = null
@@ -125,7 +155,7 @@ async function main() {
         const temTag = tags.includes(CONFIG.tagAlvo)
 
         if (temSetor && temTag) {
-          if (capturandoAgora || ultimoCapturado === c._id) continue
+          if (capturandoAgora) continue
           console.log(`  🎯 ALVO ENCONTRADO!`)
           ultimoCapturado = c._id
           capturandoAgora = true
