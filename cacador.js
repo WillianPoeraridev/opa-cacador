@@ -31,6 +31,10 @@ async function capturarCliente(clienteNome) {
 
     const exec = (expression) => Runtime.evaluate({ expression, awaitPromise: true })
 
+    // Ativa a aba do OPA antes de clicar
+    await CDP.Activate({ id: tab.id, host: CONFIG.host, port: CONFIG.port }).catch(() => {})
+    await new Promise(r => setTimeout(r, 200))
+
     // Abre a fila
     await exec(`document.querySelector('div[data-id="atend_aguard"]').click()`)
 
@@ -106,19 +110,48 @@ async function main() {
 
   await Network.enable()
 
-  // Previne throttling do Chrome em abas em background
-  try {
-    const { Page } = client
-    await Page.enable()
-    await client.send('Emulation.setFocusEmulationEnabled', { enabled: true })
-  } catch(_) {}
+  const { Runtime: RT, Page } = client
+  await RT.enable()
+  await Page.enable()
 
-  // Mantém a aba "viva" com um ping a cada 10s
-  setInterval(async () => {
-    try {
-      await client.send('Runtime.evaluate', { expression: '1' })
-    } catch(_) {}
-  }, 10000)
+  // Injeta ANTES da página carregar — captura o WebSocket no momento da criação
+  await Page.addScriptToEvaluateOnNewDocument({ source: `
+    (function() {
+      // Sobrescreve visibilidade
+      Object.defineProperty(document, 'visibilityState', { get: () => 'visible' })
+      Object.defineProperty(document, 'hidden', { get: () => false })
+
+      // Intercepta WebSocket na criação e armazena globalmente
+      const _OrigWS = window.WebSocket
+      window.WebSocket = function(...args) {
+        const ws = new _OrigWS(...args)
+        if (args[0] && args[0].includes('socket.io')) {
+          window.__opaWS = ws
+        }
+        return ws
+      }
+      window.WebSocket.prototype = _OrigWS.prototype
+
+      // Quando o socket.io conectar, começa a pedir a fila a cada 3s
+      const _origSend = _OrigWS.prototype.send
+      _OrigWS.prototype.send = function(data) {
+        if (this === window.__opaWS && !window.__opaPoller) {
+          window.__opaPoller = setInterval(() => {
+            if (window.__opaWS && window.__opaWS.readyState === 1) {
+              const payload = '42["getAtendimentosListagem",{"menuAtendimentos":"atend_aguard","filtroListagem":"","pularRegistros":0,"filtroPesquisa":"","filtroAvancado":null}]'
+              window.__opaWS.send(payload)
+            }
+          }, 3000)
+        }
+        return _origSend.call(this, data)
+      }
+    })()
+  ` })
+
+  // Recarrega a página para o script ser injetado
+  console.log('🔄 Recarregando OPA para injetar poller...')
+  await Page.reload()
+  await new Promise(r => setTimeout(r, 3000))
 
   console.log('👀 Escutando fila em tempo real...\n')
 
